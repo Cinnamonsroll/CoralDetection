@@ -1,77 +1,69 @@
 import cv2
-import numpy as np
-import os
+from ultralytics import YOLO
 
-lower_coral = np.array([0, 0, 180])
-upper_coral = np.array([180, 50, 255])
 
-def detect_coral_in_directory(directory_path: str):
-    if not os.path.exists(directory_path):
-        print(f"Error: Directory {directory_path} does not exist.")
-        return
+yolo_models = {
+    'model1': YOLO('./algae.pt'),
+    'model2': YOLO('./coral.pt')
+}
+
+
+videoCap = cv2.VideoCapture(0)
+
+def get_colors(cls_num):
+    base_colors = [(255, 0, 0), (0, 255, 0), (0, 0, 255)]
+    color_index = cls_num % len(base_colors)
+    increments = [(1, -2, 1), (-2, 1, -1), (1, -1, 2)]
+    color = [
+        (base_colors[color_index][i] + increments[color_index][i] * (cls_num // len(base_colors))) % 256
+        for i in range(3)
+    ]
+    return tuple(color)
+
+while True:
+    ret, frame = videoCap.read()
+    if not ret:
+        continue
+
     
-    output_directory = os.path.join(directory_path, "output")
-    os.makedirs(output_directory, exist_ok=True)
+    detection_frame = frame.copy()
 
-    for filename in os.listdir(directory_path):
-        if filename.lower().endswith(
-            (".png", ".jpg", ".jpeg")
-        ):
-            image_path = os.path.join(directory_path, filename)
+    for model_name, yolo in yolo_models.items():
+        results = yolo.track(detection_frame, stream=True)
 
-            image = cv2.imread(image_path)
-            if image is None:
-                print(f"Warning: Unable to load image {filename}")
-                continue
-
+        for result in results:
             
-            image_resized = cv2.resize(image, (640, 480))
-            original_image = image_resized.copy()
+            classes_names = result.names
 
-            gray = cv2.cvtColor(image_resized, cv2.COLOR_BGR2GRAY)
-            _, mask = cv2.threshold(gray, 240, 255, cv2.THRESH_BINARY)
+            for box in result.boxes:
+                if box.conf[0] > 0.4:
+                    [x1, y1, x2, y2] = box.xyxy[0]
+                    x1, y1, x2, y2 = int(x1), int(y1), int(x2), int(y2)
 
-            mask_inv = cv2.bitwise_not(mask)
-            image_resized = cv2.bitwise_and(image_resized, image_resized, mask=mask_inv)
+                    cls = int(box.cls[0])
+                    class_name = classes_names[cls]
+                    color = get_colors(cls)
 
-            hsv = cv2.cvtColor(image_resized, cv2.COLOR_BGR2HSV)
-            coral_mask = cv2.inRange(hsv, lower_coral, upper_coral)
+                    
+                    cv2.rectangle(frame, (x1, y1), (x2, y2), color, 5)
 
-            kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5))
-            coral_mask = cv2.morphologyEx(coral_mask, cv2.MORPH_CLOSE, kernel)
+                    
+                    cv2.putText(
+                        frame,
+                        f'{class_name} {box.conf[0]:.2f}',
+                        (x1, y1 - 10),
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        1,
+                        color,
+                        2
+                    )
 
-            contours, _ = cv2.findContours(coral_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    
+    cv2.imshow('frame', frame)
 
-            height, width = coral_mask.shape
-            margin = 130
+    if cv2.waitKey(1) & 0xFF == ord('q'):
+        break
 
-            def is_near_edge(contour):
-                x, y, w, h = cv2.boundingRect(contour)
-                return (
-                    x < margin
-                    or y < margin
-                    or (x + w) > (width - margin)
-                    or (y + h) > (height - margin)
-                )
 
-            filtered_contours = [c for c in contours if not is_near_edge(c)]
-
-            largest_contour = max(filtered_contours, key=cv2.contourArea, default=None)
-            if largest_contour is not None:
-                x, y, w, h = cv2.boundingRect(largest_contour)
-                cv2.rectangle(original_image, (x, y), (x + w, y + h), (255, 0, 255), 2)
-                cv2.putText(
-                    original_image,
-                    "Coral",
-                    (x, y - 10),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    0.5,
-                    (255, 0, 255),
-                    2,
-                )
-            original_image[mask_inv == 0] = [255, 255, 255]
-            output_path = os.path.join(output_directory, filename)
-            cv2.imwrite(output_path, original_image)
-            print(f"Processed {filename} and saved result to {output_path}")
-directory_path = "images"
-detect_coral_in_directory(directory_path)
+videoCap.release()
+cv2.destroyAllWindows()
